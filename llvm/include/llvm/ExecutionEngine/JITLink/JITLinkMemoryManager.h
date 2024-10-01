@@ -245,6 +245,12 @@ public:
 
     uint64_t total() const { return StandardSegs + FinalizeSegs; }
   };
+    struct SplitPageBasedLayoutSizes {
+    // Split finalize if the allocator has special handling for shorter lifetime parts.
+    uint64_t RXSegs = 0;
+    uint64_t ROSegs = 0;
+    uint64_t RWSegs = 0;
+  };
 
 private:
   using SegmentMap = orc::AllocGroupSmallMap<Segment>;
@@ -266,7 +272,9 @@ public:
   /// is higher than a page.
   Expected<ContiguousPageBasedLayoutSizes>
   getContiguousPageBasedLayoutSizes(uint64_t PageSize);
-
+  // Returns the size of each type of protection required to allocate all segments.
+  Expected<SplitPageBasedLayoutSizes>
+  getSplitPageBasedLayoutSizes(uint64_t PageSize);
   /// Returns an iterator over the segments of the layout.
   iterator_range<SegmentMap::iterator> segments() {
     return {Segments.begin(), Segments.end()};

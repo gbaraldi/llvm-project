@@ -8,6 +8,7 @@
 
 #include "llvm/ExecutionEngine/JITLink/JITLinkMemoryManager.h"
 #include "llvm/ExecutionEngine/JITLink/JITLink.h"
+#include "llvm/ExecutionEngine/Orc/Shared/MemoryFlags.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/Process.h"
 
@@ -94,6 +95,41 @@ BasicLayout::getContiguousPageBasedLayoutSizes(uint64_t PageSize) {
       SegsSizes.StandardSegs += SegSize;
     else
       SegsSizes.FinalizeSegs += SegSize;
+  }
+
+  return SegsSizes;
+}
+
+Expected<BasicLayout::SplitPageBasedLayoutSizes>
+BasicLayout::getSplitPageBasedLayoutSizes(uint64_t PageSize) {
+  SplitPageBasedLayoutSizes SegsSizes;
+
+  for (auto &KV : segments()) {
+    auto &AG = KV.first;
+    auto &Seg = KV.second;
+
+    if (Seg.Alignment > PageSize)
+      return make_error<StringError>("Segment alignment greater than page size",
+                                     inconvertibleErrorCode());
+
+    uint64_t SegSize = alignTo(Seg.ContentSize + Seg.ZeroFillSize, PageSize);
+    orc::MemProt MP = AG.getMemProt();
+    if (MP == (orc::MemProt::Read | orc::MemProt::Exec))
+      SegsSizes.RXSegs += SegSize;
+    else if (MP == (orc::MemProt::Read | orc::MemProt::Write))
+      SegsSizes.RWSegs += SegSize;
+    else if (MP == orc::MemProt::Read)
+      SegsSizes.ROSegs += SegSize;
+    else
+      return make_error<StringError>("Unknown MemProt",
+                                     inconvertibleErrorCode());
+    // if (AG.getMemLifetime() == orc::MemLifetime::Standard)
+    //   if ((AG.getMemProt() & orc::MemProt::Exec) != orc::MemProt::None) // Text
+    //     SegsSizes.TextSegs += SegSize;
+    //   else // Data
+    //     SegsSizes.DataSegs += SegSize;
+    // else
+    //   SegsSizes.FinalizeSegs += SegSize;
   }
 
   return SegsSizes;
