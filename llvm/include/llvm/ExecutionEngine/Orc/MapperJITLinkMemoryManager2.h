@@ -18,6 +18,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ExecutionEngine/JITLink/JITLinkMemoryManager.h"
 #include "llvm/ExecutionEngine/Orc/MemoryMapper.h"
+#include "llvm/ExecutionEngine/Orc/Shared/ExecutorAddress.h"
 #include "llvm/Support/MathExtras.h"
 #include <cstddef>
 #include <cstdint>
@@ -25,18 +26,19 @@
 
 namespace llvm {
 namespace orc {
-  const size_t MaxSlabSections = 8; // Maybe this could be tunable but for now we will just use 8
-
   struct Slab {
+    public:
+      Slab(uint64_t PageSize, ExecutorAddrRange Span, MemProt Prot);
+      bool canFit(uint64_t Size, size_t Align) const;
+      std::optional<ExecutorAddrRange> allocate(uint64_t Size, uint64_t Align);
+      bool deallocate(ExecutorAddr Addr);
     struct SlabSection {
     public:
-      SlabSection(Slab& Parent,ExecutorAddrRange Span, MemProt Prot);
-      ExecutorAddrRange span() const { return Span; }
-      ExecutorAddr lastIdx() const { return LastIdx; }
-      bool availableBytes() const { return Span.End - LastIdx; }
-      bool canFit(size_t Size, size_t Align) const;
+      // Span must be page aligned
+      SlabSection (ExecutorAddrRange Span, MemProt Prot);
+      bool canFit(uint64_t Size, size_t Align) const;
       MemProt prot() const { return Prot; }
-      std::optional<ExecutorAddrRange> allocate(size_t Size, size_t Align);
+      std::optional<ExecutorAddrRange> allocate(uint64_t Size, uint64_t Align);
       bool deallocate(ExecutorAddr Addr);
     private:
       using AvailableMemoryMap = IntervalMap<ExecutorAddr, bool>;
@@ -44,23 +46,11 @@ namespace orc {
       IntervalMap<ExecutorAddr, bool> AvailableMemory;
       // Ranges that have been reserved in executor and already allocated
       DenseMap<ExecutorAddr, ExecutorAddrDiff> UsedMemory;
+      ExecutorAddrDiff LargestInterval;
       MemProt Prot;
-      Slab &Parent;
     };
-
-    std::optional<ExecutorAddrRange> allocate() {
-      // for (auto &SlabSection : Sections) {
-      //   if (SlabSection.prot() == Prot) {
-      //     if (auto Range = SlabSection.allocate(Size, Align))
-      //       return Range;
-      //   }
-      // }
-      return std::nullopt;
-    }
     private:
-      size_t page_size;
-
-      ExecutorAddrRange Span;
+      uint64_t page_size;
         // At any one point all these sections must be part of one large slab of memory.
       SlabSection ROSections;
       SlabSection RWSections;

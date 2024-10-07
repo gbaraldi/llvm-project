@@ -15,6 +15,7 @@
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/Process.h"
 #include <cassert>
+#include <cstddef>
 #include <optional>
 
 using namespace llvm::jitlink;
@@ -22,6 +23,7 @@ using namespace llvm::jitlink;
 namespace llvm {
 namespace orc {
 
+#define MIN_INTERVAL_SIZE 128
 class MapperJITLinkMemoryManager2::InFlightAlloc
     : public JITLinkMemoryManager::InFlightAlloc {
 public:
@@ -58,36 +60,56 @@ private:
   ExecutorAddr AllocAddr;
   std::vector<MemoryMapper::AllocInfo::SegInfo> Segs;
 };
-
-Slab::SlabSection::SlabSection(Slab& Parent, ExecutorAddrRange Span, MemProt Prot) : Span(Span), LastIdx(Span.Start), Prot(Prot), Parent(Parent) {
-  assert(Span.Start <= Span.End && "Invalid span");
-  assert((alignTo(Span.Start.getValue(), Parent.page_size) == Span.Start.getValue()));
-  assert((alignTo(Span.End.getValue(), Parent.page_size) == Span.End.getValue()));
+  Slab::SlabSection::SlabSection(ExecutorAddrRange Span, MemProt Prot) : AvailableMemory(AMAllocator), Prot(Prot) {
+    AvailableMemory.insert(Span.Start, Span.End - 1, true);
+    assert(Span.Start <= Span.End && "Invalid span");
 }
 
-std::optional<ExecutorAddrRange> Slab::SlabSection::allocate(size_t Size, size_t Align) {
-    Size = NextPowerOf2(Size); // Power of 2 to make the freelist faster/easier
-    assert(Size > 0 && "Size must be non-zero");
-    assert(Align > 0 && "Alignment must be non-zero");
-    assert(Size <= std::numeric_limits<uint32_t>::max());
-    ExecutorAddr AlignedStart = ExecutorAddr(alignTo(LastIdx.getValue() + Size, Align));
-    ExecutorAddr AlignedEnd = AlignedStart + Size;
-    if (AlignedEnd > Span.End)
-      return std::nullopt;
-    LastIdx = AlignedEnd;
-    return ExecutorAddrRange(AlignedStart, AlignedEnd);
-}
+std::optional<ExecutorAddrRange> Slab::SlabSection::allocate(uint64_t Size, uint64_t Align) {
 
-std::optional<Slab::SlabSection> Slab::SlabSection::split(MemProt Prot) {
-  auto AvailableMemory = Span.End - LastIdx;
-  // Split the SlabSection in half
-  auto NewStart = LastIdx + AvailableMemory / 2;
-  NewStart = ExecutorAddr(alignTo(NewStart.getValue(), Parent.page_size));
-  if ((Span.End - NewStart) < Parent.page_size) // Need to return at least 1 page
-    return std::nullopt;
-  auto NewSpan = ExecutorAddrRange(NewStart, Span.End);
-  Span = ExecutorAddrRange(Span.Start, NewStart);
-  return SlabSection(Parent, NewSpan, Prot);
+    ExecutorAddrRange SelectedRange{};
+    AvailableMemoryMap::iterator BestFit;
+    uint64_t LargestInterval = 0;
+    // Best fit search.
+    // Look through all the intervals and find the smallest one large enough to fit the allocation.
+    // Also take note of the largest interval size for fast canFit checks.
+    // One could also try a first fits approach which is faster but wastes more memory and might fragment the memory more.
+    for (AvailableMemoryMap::iterator It = AvailableMemory.begin();
+                                      It != AvailableMemory.end(); It++) {
+        uint64_t AlignedStart = alignTo(It.start().getValue(), Align);
+        if ((AlignedStart + Size) <= (It.stop().getValue() + 1)) {
+            uint64_t AllocSize = It.stop().getValue() - AlignedStart + 1;
+            if (SelectedRange.empty() || AllocSize < SelectedRange.size()) {
+                SelectedRange = ExecutorAddrRange(It.start(), It.stop() + 1);
+                auto OldBestFit = BestFit;
+                BestFit = It;
+                if (LargestInterval < OldBestFit.stop() - OldBestFit.start()) {
+                    LargestInterval = OldBestFit.start() - OldBestFit.stop();
+                }
+            }
+        } else {
+            if (LargestInterval < It.stop() - It.start()) {
+                LargestInterval = It.stop() - It.start();
+            }
+        }
+    }
+    this->LargestInterval = LargestInterval;
+    if (SelectedRange.empty()) {
+        // This really shouldn't happen, the caller should do a canFit check first.
+        return std::nullopt;
+    }
+
+    // Check if we want to save the remaining memory for reuse in next allocation(s)
+    uint64_t AlignedEnd = alignTo(BestFit.start().getValue(), Align) + Size;
+    if ((BestFit.stop().getValue() - 1) - (AlignedEnd) > MIN_INTERVAL_SIZE) { // Don't want to make tiny intervals
+        SelectedRange = ExecutorAddrRange(BestFit.start(), ExecutorAddr(AlignedEnd));
+        auto IntervalEnd = BestFit.stop();
+        BestFit.erase();
+        AvailableMemory.insert(ExecutorAddr(AlignedEnd), IntervalEnd - 1, true);
+    } else
+        BestFit.erase();
+
+    return SelectedRange;
 }
 
 MapperJITLinkMemoryManager2::MapperJITLinkMemoryManager2(
@@ -172,7 +194,7 @@ void MapperJITLinkMemoryManager2::allocate(const JITLinkDylib *JD, LinkGraph &G,
       It.erase();
       break;
     }
-  }µ
+  }
 
   if (SelectedRange.empty()) { // no already reserved range was found
     auto TotalAllocation = alignTo(TotalSize, ReservationUnits);

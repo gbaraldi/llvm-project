@@ -112,7 +112,7 @@ BasicLayout::getSplitPageBasedLayoutSizes(uint64_t PageSize) {
       return make_error<StringError>("Segment alignment greater than page size",
                                      inconvertibleErrorCode());
 
-    uint64_t SegSize = alignTo(Seg.ContentSize + Seg.ZeroFillSize, PageSize);
+    uint64_t SegSize = alignTo(Seg.ContentSize + Seg.ZeroFillSize, Seg.Alignment);
     orc::MemProt MP = AG.getMemProt();
     if (MP == (orc::MemProt::Read | orc::MemProt::Exec))
       SegsSizes.RXSegs += SegSize;
