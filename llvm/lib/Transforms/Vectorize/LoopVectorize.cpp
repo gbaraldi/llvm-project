@@ -6666,10 +6666,25 @@ void LoopVectorizationPlanner::addReductionResultComputation(
         CmpR->replaceUsesOfWith(PhiR, PhiR->getStartValue());
       Builder.setInsertPoint(AnyOfSelect);
 
+      // Unlike the select, OR propagates poison from the reduction value, so
+      // freeze the condition. Values from outside the loop, and compares of
+      // them that can't create poison, don't need it: if they can be poison
+      // once, they can be poison in every iteration.
+      bool NeedsFreeze = !isa<VPIRValue>(Cmp);
+      VPValue *A, *B;
+      if (NeedsFreeze && match(Cmp, m_Cmp(m_VPValue(A), m_VPValue(B)))) {
+        auto *CmpRecipe = cast<VPRecipeWithIRFlags>(Cmp->getDefiningRecipe());
+        FastMathFlags FMF = CmpRecipe->getFastMathFlagsOrNone();
+        NeedsFreeze = !isa<VPIRValue>(A) || !isa<VPIRValue>(B) ||
+                      FMF.noNaNs() || FMF.noInfs();
+      }
+
       // If the true value of the select is the reduction phi, the new value
       // is selected if the negated condition is true in any iteration.
       if (TrueValIsPhi)
         Cmp = Builder.createNot(Cmp);
+      if (NeedsFreeze)
+        Cmp = Builder.createFreeze(Cmp);
 
       // Build a fresh i1 chain (phi, or, and i1 versions of any blend/select
       // the exiting value flows through).
